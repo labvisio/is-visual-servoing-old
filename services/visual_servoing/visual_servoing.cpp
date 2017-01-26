@@ -1,17 +1,22 @@
+// https://youtu.be/4z_spuaPWSo
 #include <armadillo>
+#include <atomic>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/program_options.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
 #include <is/is.hpp>
 #include <is/msgs/camera.hpp>
 #include <is/msgs/common.hpp>
 #include <is/msgs/geometry.hpp>
 #include <is/msgs/robot.hpp>
+#include <mutex>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <thread>
 #include "../../msgs/controller.hpp"
 #include "../../msgs/frame_converter.hpp"
 
@@ -51,8 +56,8 @@ int main(int argc, char* argv[]) {
   options("uri,u", po::value<std::string>(&uri)->default_value("amqp://localhost"), "broker uri");
   options("cameras,c", po::value<std::vector<std::string>>(&cameras)->multitoken(), "cameras");
   options("robot,r", po::value<std::string>(&robot), "robot");
-  options("height,h", po::value<unsigned int>(&resolution.height)->default_value(1288), "image height");
-  options("width,w", po::value<unsigned int>(&resolution.width)->default_value(728), "image width");
+  options("height,h", po::value<unsigned int>(&resolution.height)->default_value(728), "image height");
+  options("width,w", po::value<unsigned int>(&resolution.width)->default_value(1288), "image width");
   options("fps,f", po::value<double>(&fps)->default_value(5.0), "frames per second");
   options("type,t", po::value<std::string>(&img_type)->default_value("GRAY"), "image type");
   options("pose_x,x", po::value<double>(&x)->default_value(0.0), "desired pose x");
@@ -89,9 +94,19 @@ int main(int argc, char* argv[]) {
   ControllerState controller_state = ControllerState::CONSUME_IMAGE;
   time_point<system_clock> deadline;
   std::vector<AmqpClient::Envelope::ptr_t> images_message(n_cameras);
+
+  std::vector<AmqpClient::Envelope::ptr_t> images_message_display(n_cameras);
+  std::mutex mtx;
+  std::condition_variable cv;
+  std::atomic<bool> running;
+
   FrameConverterRequest frame_converter_request;
   frame_converter_request.z = 650.0;
   PointsWithReference points3d;
+  Pose image_pose;
+  std::atomic<bool> new_point;
+  new_point.store(false);
+
   FinalPositionRequest action;
   action.desired_pose = {{x, y}, 0.0};
   action.max_vel_x = 250.0;
@@ -101,6 +116,120 @@ int main(int argc, char* argv[]) {
   action.center_offset = 200.0;
   int n_deadlines = 0;
 
+  bool arrived = false;
+
+  // std::thread visual_layer([&images_message_display, &mtx, &cv, &running, &uri, &resolution, &cameras]() {
+  std::thread visual_layer([&]() {
+
+    struct callback_handle {
+      Point point;
+      std::atomic<bool> request_3d;
+      std::string reference;
+      Resolution resolution;
+    };
+
+    auto mouse_callback = [](int event, int x, int y, int, void* userdata) {
+      callback_handle* handle = (callback_handle*)userdata;
+      /*
+      if (event == cv::EVENT_MOUSEMOVE) {
+        time_point<system_clock>* time = (time_point<system_clock>*)userdata;
+        if (duration_cast<milliseconds>(system_clock::now() - *time).count() > 100) {
+          *time = system_clock::now();
+          is::logger()->info("Mouse position [{},{}]", x, y);
+        }
+      } else*/ if (event == cv::EVENT_LBUTTONUP) {
+        handle->point.x = x;
+        handle->point.y = y;
+        int x_div = handle->point.x / (handle->resolution.width / 2);
+        int y_div = handle->point.y / (handle->resolution.height / 2);
+        if (x_div == 0) {
+          if (y_div == 0) {  // 0,0
+            handle->reference = "ptgrey.0";
+          } else {  // 0,1
+            handle->reference = "ptgrey.2";
+          }
+        } else {
+          if (y_div == 0) {  // 1,0
+            handle->reference = "ptgrey.1";
+          } else {  // 1,1
+            handle->reference = "ptgrey.3";
+          }
+        }
+        handle->point.x = 2 * (static_cast<int>(handle->point.x) % (handle->resolution.width / 2));
+        handle->point.y = 2 * (static_cast<int>(handle->point.y) % (handle->resolution.height / 2));
+        handle->request_3d.store(true);
+      }
+    };
+
+    // time_point<system_clock> time_point = system_clock::now();
+    callback_handle handle;
+    handle.resolution = resolution;
+    cv::namedWindow("Visual Servoring");
+    cv::setMouseCallback("Visual Servoring", mouse_callback, &handle);
+
+    auto is = is::connect(uri);
+    auto client = is::make_client(is);
+    handle.request_3d.store(false);
+
+    while (running.load()) {
+      std::unique_lock<std::mutex> lk(mtx);
+      auto status = cv.wait_for(lk, 1s);
+      if (status == std::cv_status::no_timeout) {
+        std::vector<cv::Mat> up_frames;
+        std::vector<cv::Mat> down_frames;
+        int n_frame = 0;
+        for (auto& msg : images_message_display) {
+          auto image = is::msgpack<CompressedImage>(msg);
+          cv::Mat current_frame = cv::imdecode(image.data, CV_LOAD_IMAGE_COLOR);
+          cv::resize(current_frame, current_frame, cv::Size(current_frame.cols / 2, current_frame.rows / 2));
+          if (n_frame < 2) {
+            up_frames.push_back(current_frame);
+          } else {
+            down_frames.push_back(current_frame);
+          }
+          n_frame++;
+        }
+        mtx.unlock();
+
+        cv::Mat output_image;
+        cv::Mat up_row, down_row;
+        std::vector<cv::Mat> rows_frames;
+        cv::hconcat(up_frames, up_row);
+        rows_frames.push_back(up_row);
+        cv::hconcat(down_frames, down_row);
+        rows_frames.push_back(down_row);
+        cv::vconcat(rows_frames, output_image);
+
+        cv::imshow("Visual Servoring", output_image);
+        cv::waitKey(1);
+
+        if (handle.request_3d.load()) {
+          FrameConverterRequest request;
+          PointsWithReference point_reference;
+          point_reference.points.push_back(handle.point);
+          point_reference.reference = handle.reference;
+          request.patterns.push_back(point_reference);
+          request.z = 0.0;
+
+          auto id = client.request("frame_converter.camera_to_world", is::msgpack(request));
+          auto reply = client.receive_for(100ms, id, is::policy::discard_others);
+          if (reply != nullptr) {
+            auto points3d = is::msgpack<PointsWithReference>(reply);
+            // Set desired pose
+            mtx.lock();
+            image_pose.position.x = points3d.points.front().x;
+            image_pose.position.y = points3d.points.front().y;
+            mtx.unlock();
+            new_point.store(true);
+          }
+
+          handle.request_3d.store(false);
+        }
+      }
+    }
+  });
+
+  running.store(true);
   while (1) {
     switch (controller_state) {
       case ControllerState::CONSUME_IMAGE: {
@@ -108,6 +237,18 @@ int main(int argc, char* argv[]) {
           images_message[i] = is.consume(frames_tags[i]);
         }
         deadline = system_clock::now() + milliseconds(static_cast<int>(1000.0 / fps));
+        if (mtx.try_lock()) {
+          images_message_display = images_message;
+          if (new_point.load()) {
+            action.desired_pose = image_pose;
+            arrived = false;
+            is::logger()->info("New action desired pose [{},{}]", action.desired_pose.position.x,
+                               action.desired_pose.position.y);
+            new_point.store(false);
+          }
+          mtx.unlock();
+          cv.notify_one();
+        }
         controller_state = ControllerState::REQUEST_PATTERN;
         break;
       }
@@ -171,7 +312,7 @@ int main(int argc, char* argv[]) {
         if (reply != nullptr) {
           auto pose = is::msgpack<Pose>(reply);
           action.current_pose = pose;
-          is::logger()->info("{};{};{}", pose.position.x, pose.position.y, pose.heading);
+          is::logger()->info("Robot pose: {};{};{}", pose.position.x, pose.position.y, pose.heading);
           controller_state = ControllerState::REQUEST_CONTROL_ACTION;
         } else {
           controller_state = ControllerState::DEADLINE_EXCEEDED;
@@ -180,23 +321,29 @@ int main(int argc, char* argv[]) {
       }
 
       case ControllerState::REQUEST_CONTROL_ACTION: {
+        if (arrived) {
+          controller_state = ControllerState::CONSUME_IMAGE;
+          break;
+        }
+
         double error = std::sqrt(std::pow(action.desired_pose.position.x - action.current_pose.position.x, 2.0) +
                                  std::pow(action.desired_pose.position.y - action.current_pose.position.y, 2.0));
 
         std::string id;
         if (error < 100.0) {
+          arrived = true;
           id = client.request(robot + ".set_speed", is::msgpack<Speed>({0.0, 0.0}));
-          return 0;
         } else {
           id = client.request("controller.final_position;" + robot + ".set_speed",
                               is::msgpack<FinalPositionRequest>(action));
-          auto reply = client.receive_until(deadline, id, is::policy::discard_others);
-          if (reply == nullptr) {
-            controller_state = ControllerState::DEADLINE_EXCEEDED;
-          } else {
-            controller_state = ControllerState::CONSUME_IMAGE;
-            n_deadlines = 0;
-          }
+        }
+
+        auto reply = client.receive_until(deadline, id, is::policy::discard_others);
+        if (reply == nullptr) {
+          controller_state = ControllerState::DEADLINE_EXCEEDED;
+        } else {
+          controller_state = ControllerState::CONSUME_IMAGE;
+          n_deadlines = 0;
         }
         break;
       }
