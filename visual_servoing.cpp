@@ -20,16 +20,39 @@ using namespace is::msg::geometry;
 using namespace is::msg::controller;
 namespace po = boost::program_options;
 
+void overlay_image(cv::Mat & src, cv::Mat const& overlay, cv::Point const& location) {
+  for (int y = cv::max(location.y, 0); y < src.rows; ++y) {
+    int fY = y - location.y;
+    if (fY >= overlay.rows)
+      break;
+    for (int x = cv::max(location.x, 0); x < src.cols; ++x) {
+      int fX = x - location.x;
+      if (fX >= overlay.cols)
+        break;
+      double opacity = ((double)overlay.data[fY * overlay.step + fX * overlay.channels() + 3]) / 255;
+      for (int c = 0; opacity > 0 && c < src.channels(); ++c) {
+        unsigned char overlayPx = overlay.data[fY * overlay.step + fX * overlay.channels() + c];
+        unsigned char srcPx = src.data[y * src.step + x * src.channels() + c];
+        src.data[y * src.step + src.channels() * x + c] = srcPx * (1. - opacity) + overlayPx * opacity;
+      }
+    }
+  }
+}
+
 struct callback_handle {
   Point point;
   bool request;
   std::string reference;
   Resolution resolution;
+  int x;
+  int y;
 };
 
 auto mouse_callback = [](int event, int x, int y, int, void* userdata) {
   callback_handle* handle = (callback_handle*)userdata;
   if (event == cv::EVENT_LBUTTONUP) {
+    handle->x = x;
+    handle->y = y;
     handle->point.x = x;
     handle->point.y = y;
     int x_div = handle->point.x / (handle->resolution.width / 2);
@@ -67,7 +90,7 @@ int main(int argc, char* argv[]) {
   options("uri,u", po::value<std::string>(&uri)->default_value("amqp://localhost"), "broker uri");
   options("cameras,c", po::value<std::vector<std::string>>(&cameras)->multitoken(), "cameras");
   options("robot,r", po::value<std::string>(&robot), "robot");
-	options("height,h", po::value<unsigned int>(&resolution.height)->default_value(728), "image height");
+  options("height,h", po::value<unsigned int>(&resolution.height)->default_value(728), "image height");
   options("width,w", po::value<unsigned int>(&resolution.width)->default_value(1288), "image width");
   options("fps,f", po::value<double>(&fps), "frames per second");
   options("type,t", po::value<std::string>(&img_type), "image type");
@@ -87,10 +110,10 @@ int main(int argc, char* argv[]) {
   if (vm.count("height") && vm.count("width"))
     configure.resolution = resolution;
   if (vm.count("fps")) {
-		SamplingRate sample_rate;
-		sample_rate.rate = fps;
+    SamplingRate sample_rate;
+    sample_rate.rate = fps;
     configure.sample_rate = sample_rate;
-	}
+  }
   if (vm.count("type"))
     configure.image_type = ImageType{img_type};
 
@@ -111,10 +134,13 @@ int main(int argc, char* argv[]) {
   callback_handle handle;
   handle.resolution = resolution;
   handle.request = false;
+  handle.x = 0;
+  handle.y = 0;
 
   cv::namedWindow("Visual Servoring");
   cv::setMouseCallback("Visual Servoring", mouse_callback, &handle);
 
+  cv::Mat location = cv::imread("location.png", cv::IMREAD_UNCHANGED);
   while (1) {
     for (int i = 0; i < n_cameras; ++i) {
       images_message[i] = is.consume(frames_tags[i]);
@@ -143,12 +169,8 @@ int main(int argc, char* argv[]) {
     rows_frames.push_back(down_row);
     cv::vconcat(rows_frames, output_image);
 
-    cv::imshow("Visual Servoring", output_image);
-    cv::waitKey(1);
-
     if (handle.request) {
       is::logger()->info("Mouse clicked [{}][{},{}]", handle.reference, handle.point.x, handle.point.y);
-
       VisualServoingRequest request;
       request.point = handle.point;
       request.reference = handle.reference;
@@ -156,6 +178,10 @@ int main(int argc, char* argv[]) {
       client.receive_for(10ms, req_id, is::policy::discard_others);
       handle.request = false;
     }
+
+    overlay_image(output_image, location, cv::Point(handle.x - location.cols / 2, handle.y - location.rows));
+    cv::imshow("Visual Servoring", output_image);
+    cv::waitKey(1);
   }
   return 0;
 }
