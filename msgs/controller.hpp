@@ -24,8 +24,8 @@ struct FinalPositionRequest {
 };
 
 struct FormationRequest {
+  Pose current_pose_robot_0;
   Pose current_pose_robot_1;
-  Pose current_pose_robot_2;
   
   Pose desired_pose_formation;
   double desired_distance_formation;
@@ -34,7 +34,7 @@ struct FormationRequest {
   double max_vel;
   double center_offset;
 
-  IS_DEFINE_MSG(current_pose_robot_1, current_pose_robot_2, desired_pose_formation, desired_distance_formation, 
+  IS_DEFINE_MSG(current_pose_robot_0, current_pose_robot_1, desired_pose_formation, desired_distance_formation, 
                 gain, max_vel, center_offset);
 };
 

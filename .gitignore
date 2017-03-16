@@ -4,4 +4,5 @@ services/frame_converter/frame_converter
 services/final_position_controller/final_position_controller
 services/visual_servoing/visual_servoing
 services/formation_controller/formation_controller
+test/formation_controller/formation_controller
 visual_servoing

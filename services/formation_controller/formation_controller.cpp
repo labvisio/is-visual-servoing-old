@@ -87,21 +87,21 @@ int main(int argc, char* argv[]) {
           mat InvL = (1.0/req.max_vel)*eye<mat>(4,4);
           mat kp = req.gain*eye<mat>(4,4);
 
-          double psi1 = req.current_pose_robot_1.heading;
-          double psi2 = req.current_pose_robot_2.heading;
+          double psi1 = req.current_pose_robot_0.heading;
+          double psi2 = req.current_pose_robot_1.heading;
           double a  = req.center_offset;
 
           mat x(4,1); // x = [x1 y1 x2 y2]'
-          x(0,0) = req.current_pose_robot_1.position.x;
-          x(1,0) = req.current_pose_robot_1.position.y;
-          x(2,0) = req.current_pose_robot_2.position.x;
-          x(3,0) = req.current_pose_robot_2.position.y;
+          x(0,0) = req.current_pose_robot_0.position.x;
+          x(1,0) = req.current_pose_robot_0.position.y;
+          x(2,0) = req.current_pose_robot_1.position.x;
+          x(3,0) = req.current_pose_robot_1.position.y;
                     
           mat q_des(4,1); // q_des = [x_f y_f rho_f alpha_f];
           q_des(0,0) = req.desired_pose_formation.position.x;
           q_des(1,0) = req.desired_pose_formation.position.y;
-          q_des(2,0) = req.desired_pose_formation.heading;
-          q_des(3,0) = req.desired_distance_formation;
+          q_des(2,0) = req.desired_distance_formation;
+          q_des(3,0) = req.desired_pose_formation.heading;
 
           mat q = f(x);
           mat q_til = q_des - q;
