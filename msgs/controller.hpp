@@ -11,7 +11,7 @@ namespace controller {
 using namespace is::msg::robot;
 
 struct FinalPositionRequest {
-	Pose current_pose;
+  Pose current_pose;
   Pose desired_pose;
 
   double gain_x;
@@ -21,6 +21,21 @@ struct FinalPositionRequest {
   double center_offset;
 
   IS_DEFINE_MSG(current_pose, desired_pose, gain_x, gain_y, max_vel_x, max_vel_y, center_offset);
+};
+
+struct FormationRequest {
+  Pose current_pose_robot_1;
+  Pose current_pose_robot_2;
+  
+  Pose desired_pose_formation;
+  double desired_distance_formation;
+
+  double gain;
+  double max_vel;
+  double center_offset;
+
+  IS_DEFINE_MSG(current_pose_robot_1, current_pose_robot_2, desired_pose_formation, desired_distance_formation, 
+                gain, max_vel, center_offset);
 };
 
 }  // ::controller
