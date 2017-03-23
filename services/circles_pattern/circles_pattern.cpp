@@ -26,8 +26,6 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  is::Connection is(is::connect(uri));
-
   // clang-format off
   auto thread = is::advertise(uri, name, {
     {

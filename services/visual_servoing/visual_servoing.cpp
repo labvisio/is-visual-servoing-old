@@ -19,6 +19,7 @@
 #include <thread>
 #include "../../msgs/controller.hpp"
 #include "../../msgs/frame_converter.hpp"
+#include "../../msgs/colorcircles_pattern.hpp"
 
 using namespace arma;
 using namespace std::chrono_literals;
@@ -29,6 +30,7 @@ using namespace is::msg::robot;
 using namespace is::msg::common;
 using namespace is::msg::geometry;
 using namespace is::msg::controller;
+using namespace is::msg::pattern;
 namespace po = boost::program_options;
 
 enum class ControllerState {
@@ -85,7 +87,7 @@ int main(int argc, char* argv[]) {
   while (client.receive_for(1s) != nullptr) {
   }
 
-  std::vector<std::string> frames_tags;
+  std::vector<is::QueueInfo> frames_tags;
   for (auto& camera : cameras) {
     frames_tags.push_back(is.subscribe({camera + ".frame"}));
   }
@@ -101,22 +103,32 @@ int main(int argc, char* argv[]) {
   std::atomic<bool> running;
 
   FrameConverterRequest frame_converter_request;
-  frame_converter_request.z = 650.0;
+  frame_converter_request.z = 208.0;
   PointsWithReference points3d;
   Pose image_pose;
   std::atomic<bool> new_point;
   new_point.store(false);
 
   FinalPositionRequest action;
+  FinalPositionRequest image_action;
   action.desired_pose = {{x, y}, 0.0};
-  action.max_vel_x = 250.0;
-  action.max_vel_y = 250.0;
-  action.gain_x = 250.0 / 300.0;
-  action.gain_y = 250.0 / 300.0;
-  action.center_offset = 200.0;
+  action.max_vel_x = 120.0;
+  action.max_vel_y = 120.0;
+  action.gain_x = 120.0 / 300.0;
+  action.gain_y = 120.0 / 300.0;
+  action.center_offset = 100.0;
   int n_deadlines = 0;
 
   bool arrived = false;
+
+  std::vector<int> thresholds_yellow = {0, 255, 93, 140, 170, 255};
+  std::vector<int> thresholds_red = {0, 255, 140, 255, 120, 180};
+  //std::vector<int> thresholds_green = {0, 252, 60, 93, 150, 220};
+  
+  ImageAndThresholds pattern_request;
+  pattern_request.thresholds_color_1 = thresholds_yellow;
+  pattern_request.thresholds_color_2 = thresholds_red;
+
 
   // std::thread visual_layer([&images_message_display, &mtx, &cv, &running, &uri, &resolution, &cameras]() {
   std::thread visual_layer([&]() {
@@ -164,8 +176,15 @@ int main(int argc, char* argv[]) {
     // time_point<system_clock> time_point = system_clock::now();
     callback_handle handle;
     handle.resolution = resolution;
-    cv::namedWindow("Visual Servoring");
-    cv::setMouseCallback("Visual Servoring", mouse_callback, &handle);
+    cv::namedWindow("Visual Servoing");
+    cv::setMouseCallback("Visual Servoing", mouse_callback, &handle);
+
+    int gain_x_window;
+    int max_vel_x_window;
+    int offset_window;
+    cv::createTrackbar("gain_x", "Visual Servoing", &gain_x_window, 1000);
+    cv::createTrackbar("max_vel_x", "Visual Servoing", &max_vel_x_window, 1000);
+    cv::createTrackbar("offset", "Visual Servoing", &offset_window, 1000);
 
     auto is = is::connect(uri);
     auto client = is::make_client(is);
@@ -219,6 +238,13 @@ int main(int argc, char* argv[]) {
             mtx.lock();
             image_pose.position.x = points3d.points.front().x;
             image_pose.position.y = points3d.points.front().y;
+             
+            image_action.max_vel_x = 250.0*(max_vel_x_window/1000.0);
+            image_action.max_vel_y = 250.0*(max_vel_x_window/1000.0);
+            image_action.gain_x = 0.5*(gain_x_window/1000.0);
+            image_action.gain_y = 0.5*(gain_x_window/1000.0);
+            image_action.center_offset = 150.0*(offset_window/1000.0);
+
             mtx.unlock();
             new_point.store(true);
           }
@@ -241,6 +267,13 @@ int main(int argc, char* argv[]) {
           images_message_display = images_message;
           if (new_point.load()) {
             action.desired_pose = image_pose;
+
+            action.max_vel_x = image_action.max_vel_x;
+            action.max_vel_y = image_action.max_vel_y;
+            action.gain_x = image_action.gain_x;
+            action.gain_y = image_action.gain_y;
+            action.center_offset = image_action.center_offset;
+
             arrived = false;
             is::logger()->info("New action desired pose [{},{}]", action.desired_pose.position.x,
                                action.desired_pose.position.y);
@@ -256,7 +289,9 @@ int main(int argc, char* argv[]) {
       case ControllerState::REQUEST_PATTERN: {
         std::vector<std::string> ids;
         for (int i = 0; i < n_cameras; ++i) {
-          ids.push_back(client.request("circles_pattern.find", images_message[i]->Message()));
+          pattern_request.reference = cameras[i];
+          pattern_request.image = is::msgpack<CompressedImage>(images_message[i]);
+          ids.push_back(client.request("colorcircles_pattern.find", is::msgpack(pattern_request)));
         }
 
         auto replies = client.receive_until(deadline, ids, is::policy::discard_others);
@@ -276,7 +311,7 @@ int main(int argc, char* argv[]) {
             PointsWithReference pattern = is::msgpack<PointsWithReference>(reply->second);
 
             if (!pattern.points.empty()) {
-              pattern.reference = cameras[i];
+              //pattern.reference = cameras[i];
               frame_converter_request.patterns.push_back(pattern);
             }
           }
@@ -306,7 +341,7 @@ int main(int argc, char* argv[]) {
       }
 
       case ControllerState::REQUEST_POSE: {
-        auto id = client.request("circles_pattern.get_pose", is::msgpack(points3d));
+        auto id = client.request("colorcircles_pattern.get_pose", is::msgpack(points3d));
         auto reply = client.receive_until(deadline, id, is::policy::discard_others);
 
         if (reply != nullptr) {

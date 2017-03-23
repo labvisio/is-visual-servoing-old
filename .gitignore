@@ -1,4 +1,5 @@
 services/circles_pattern/circles_pattern
+services/colorcircles_pattern/colorcircles_pattern
 services/circles_pattern_viewer/circles_pattern_viewer
 services/frame_converter/frame_converter
 services/final_position_controller/final_position_controller
